@@ -1,30 +1,15 @@
 # FAR-FRR Graph for UCF and Xception
 
-# Project Files
-- 所有結果皆在 `results/20/` 中
-- `cascade_threshold_sweep_detectors_dataset.csv`
-
-# Cascade threshold Sweep CSV 格式
-| 欄位名稱 (Field) | 說明 (Description) |
-| :--- | :--- |
-| **sbi_stage** | sbi 所在的關卡 |
-| **ucf_stage** | ucf 所在的關卡 |
-| **xception_stage** | xception 所在的關卡 |
-| **sbi_upper_threshold** | sbi 的上門檻 |
-| **sbi_lower_threshold** | sbi 的下門檻 |
-| **ucf_upper_threshold** | ucf 的上門檻 |
-| **ucf_lower_threshold** | ucf 的下門檻 |
-| **xception_upper_threshold** | xception 的上門檻 |
-| **xception_lower_threshold** | xception 的下門檻 |
-| **FAR** | 系統 FAR 值 |
-| **FRR** | 系統 FRR 值 |
-## 備註：
-- 沒有使用到該偵測器的話，stage = -1
+# 最新進度說明
+[progress_report.md](progress_report.md)
 
 # 真假分數
 本專題設定
 - 分數 0 為 **真**
 - 分數 1 為 **假**
+
+## Project Files
+- 所有結果皆在 `results/20/` 中
 
 # Average Inference Time
 ## UCF
