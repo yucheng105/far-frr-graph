@@ -55,3 +55,7 @@
 |DFDC               |0.483      |0.352867   |0.349892   |
 |FaceForensics      |0.707      |0.062500   |0.057143   |
 |Combined           |0.496      |0.313165   |0.31523    |
+
+
+# EER 點
+[results/min_eer_entries](results/min_eer_entries.csv)
