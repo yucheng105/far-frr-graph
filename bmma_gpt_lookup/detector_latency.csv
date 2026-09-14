@@ -1,0 +1,9 @@
+detector_name,dataset,avg_latency_ms
+SBI,CelebDF,2676.15
+SBI,DFDC,365.5
+UCF,CelebDF,166.85
+UCF,DFDC,170.81
+UCF,FaceForensics,224.81
+Xception,CelebDF,158.79
+Xception,DFDC,106.22
+Xception,FaceForensics,114.70
