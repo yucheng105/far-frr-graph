@@ -15,6 +15,9 @@ FRR 上限（β）的前提下，找出「用哪些偵測器、依什麼順序�
 這個資料夾是獨立的分析輸出，**不會修改 repo 裡任何既有檔案**（`models/`、
 `results/`、`input-csvs/` 都只被讀取，不被寫入）。
 
+**本次 GP 約束／反查修正**（最後一關單門檻、兩邊 `inv_far`、差式 cascade 重算）見
+[README_GP_FIX.md](README_GP_FIX.md)。
+
 ---
 
 ## 目錄結構
@@ -23,6 +26,9 @@ FRR 上限（β）的前提下，找出「用哪些偵測器、依什麼順序�
 bmma_gpt_lookup/
 ├── build_lookup_table.py            # 主程式（步驟1~4，見下）
 ├── validate.py                      # 讀輸出 CSV，印摘要 + 檢查格式健全性
+├── README_GP_FIX.md                 # 本次 GP 約束與反查修正說明
+├── GP_LOOKUP_TABLE_REVIEW.md        # Code review 與公式說明
+├── PROJECT_BRIEFING.md              # 專案背景（給尚未進入公式的人）
 ├── detector_latency.csv             # 補齊 sweep 檔缺少的 avg_latency_ms
 ├── threshold_sweep_sbi_faceforensics_v1.csv
 │                                     # 用 v1 原始分數重新算的「方向正確」SBI/FF++ sweep
@@ -83,7 +89,8 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 `latency_budget_ms`（延遲預算）之外，**多加了一個 `min_stages`**（最少階段數，
 見下方「為什麼加 min_stages」）。篩選順序：排列長度 ≥ min_stages → 各偵測器
 Tb 加總 ≤ latency_budget_ms → GP 求解成功 → total_frr ≤ beta → 依總延遲排序取
-最短者（打平取 frr 較小者）→ 反查門檻後還需 `threshold_L < threshold_H` 成立。
+最短者（打平取 frr 較小者）→ 反查門檻後，前 N−1 關須 `threshold_L < threshold_H`，
+最後一關須 `threshold_L ≈ threshold_H`（單一門檻）。詳見 README_GP_FIX.md。
 全部沒有可行排列時印警告說明是哪一關篩掉的，不會讓程式中斷。
 
 ---

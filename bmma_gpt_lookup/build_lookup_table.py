@@ -47,6 +47,8 @@ except ImportError as exc:  # pragma: no cover
 CombineMode = Literal["max", "mean"]
 
 EPS = 1e-6
+INV_FAR_ATOL = 1e-9
+THRESHOLD_EQ_ATOL = 1e-6
 
 
 # =============================================================================
@@ -319,9 +321,17 @@ class DetectorProfile:
         """正查：給定門檻 T，線性內插查出對應的 frr(T)。"""
         return float(np.interp(T, self.thresholds, self.frr))
 
-    def inv_far(self, target_far: float) -> float:
-        """反查：給定目標 far，線性內插反推回門檻 T（far 視為嚴格遞增的自變數）。"""
-        clipped = float(np.clip(target_far, self._far_strict[0], self._far_strict[-1]))
+    def inv_far(self, target_far: float) -> float | None:
+        """反查：給定目標 far，線性內插反推回門檻 T（far 視為嚴格遞增的自變數）。
+
+        目標 far 必須落在這條曲線的觀測範圍內（允許 INV_FAR_ATOL 的數值誤差）。
+        超出範圍回傳 None，不靜默 clip——否則 GP 要的錯誤率與落地門檻對不上。
+        """
+        lo = float(self._far_strict[0])
+        hi = float(self._far_strict[-1])
+        if target_far < lo - INV_FAR_ATOL or target_far > hi + INV_FAR_ATOL:
+            return None
+        clipped = float(np.clip(target_far, lo, hi))
         return float(np.interp(clipped, self._far_strict, self.thresholds))
 
     def inv_frr(self, target_frr: float) -> float:
@@ -421,9 +431,17 @@ def solve_gp_thresholds(profiles: list[DetectorProfile], alpha: float) -> dict |
 
     約束二（門檻順序關係，逐階段皆須成立）：AB_lb[i] <= AB_ub[i]
 
-    變數邊界：所有變數限制在 (1e-6, 1-1e-6) 之間避免數值問題。
+    約束三（最後一關必須做出最終決策）：AB_lb[n-1] == AB_ub[n-1]
+        對應 T_L == T_H。中間帶只在「後面還有偵測器」時合法，否則公式 17/18
+        會把猶豫樣本從 FAR/FRR 裡拿掉，solver 會把最後一關的 AB_lb 壓到 EPS。
 
-    求解失敗（SolverError 或 status 非 optimal）回傳 None，代表此排列不可行。
+    約束四（RB 必須是機率）：AB_lb[i] >= conb[i]  （等價 RB_lb[i] <= 1；
+        搭配 AB_lb <= AB_ub 後 AB_ub >= conb，故 RB_ub <= 1）。少了這條，
+        階段乘積 Π RB_lb 可以大於 1，total_frr 會爆掉。
+
+    變數上界：所有變數 <= 1-EPS，避免數值問題。
+
+    求解失敗（非 DGP、SolverError、或 status 非 optimal）回傳 None。
     """
     n = len(profiles)
     ab_lb = cp.Variable(n, pos=True)
@@ -448,21 +466,35 @@ def solve_gp_thresholds(profiles: list[DetectorProfile], alpha: float) -> dict |
 
     constraints = [total_far <= alpha]
     for i in range(n):
+        conb_i = float(profiles[i].conb)
         constraints += [
             ab_lb[i] <= ab_ub[i],
-            ab_lb[i] >= EPS,
+            ab_lb[i] >= conb_i,
             ab_lb[i] <= 1 - EPS,
-            ab_ub[i] >= EPS,
+            ab_ub[i] >= conb_i,
             ab_ub[i] <= 1 - EPS,
         ]
+    constraints.append(ab_lb[n - 1] == ab_ub[n - 1])
 
     problem = cp.Problem(cp.Minimize(total_frr), constraints)
+    if not problem.is_dgp():
+        raise RuntimeError("GP 模型不是 DGP，請檢查約束寫法。")
+
     try:
-        problem.solve(gp=True)
+        solve_kwargs: dict = {"gp": True}
+        if "ECOS" in cp.installed_solvers():
+            solve_kwargs["solver"] = cp.ECOS
+        problem.solve(**solve_kwargs)
     except cp.error.SolverError:
         return None
 
-    if problem.status not in ("optimal", "optimal_inaccurate"):
+    if problem.status == "optimal_inaccurate":
+        if total_far.value is None or float(total_far.value) > alpha + 1e-8:
+            return None
+    elif problem.status != "optimal":
+        return None
+
+    if ab_lb.value is None or ab_ub.value is None:
         return None
 
     stages = [
@@ -475,7 +507,13 @@ def solve_gp_thresholds(profiles: list[DetectorProfile], alpha: float) -> dict |
         for i in range(n)
     ]
 
-    return {"stages": stages, "total_far": float(total_far.value), "total_frr": float(total_frr.value)}
+    return {
+        "stages": stages,
+        "gp_total_far": float(total_far.value),
+        "gp_total_frr": float(total_frr.value),
+        "total_far": float(total_far.value),
+        "total_frr": float(total_frr.value),
+    }
 
 
 # =============================================================================
@@ -505,14 +543,23 @@ SECURITY_LEVELS: dict[str, dict[str, float]] = {
 
 def _reverse_map_thresholds(
     ordering: tuple[str, ...], detectors: list[DetectorProfile], result: dict
-) -> list[dict]:
-    """逐階段呼叫該偵測器的 inv_far()/inv_frr()，把 GP 求出的目標 ab_lb[i]、
-    rb_ub[i] 換算回實際的 threshold_L、threshold_H。
+) -> list[dict] | None:
+    """把 GP 求出的 AB_lb / AB_ub 用 inv_far 換算回 threshold_L / threshold_H。
+
+    兩邊都走 FAR 曲線：FAR 嚴格遞增且 AB_lb <= AB_ub，故 T_L <= T_H。
+    最後一關 AB_lb == AB_ub，反查後 T_L == T_H。
+    任一目標 FAR 超出該偵測器曲線範圍時回傳 None（不靜默 clip）。
     """
     rows = []
+    n = len(ordering)
     for i, (detector_name, profile, stage) in enumerate(zip(ordering, detectors, result["stages"])):
         threshold_L = profile.inv_far(stage["ab_lb"])
-        threshold_H = profile.inv_frr(stage["rb_ub"])
+        threshold_H = profile.inv_far(stage["ab_ub"])
+        if threshold_L is None or threshold_H is None:
+            return None
+        if i == n - 1:
+            # 最後一關單一門檻：兩個反查應對到同一個 T，取平均避免浮點差。
+            threshold_L = threshold_H = 0.5 * (threshold_L + threshold_H)
         rows.append(
             {
                 "stage": i + 1,
@@ -523,6 +570,44 @@ def _reverse_map_thresholds(
             }
         )
     return rows
+
+
+def _thresholds_valid(rows: list[dict]) -> bool:
+    """前 N-1 關必須 T_L < T_H（還有續傳區間）；最後一關必須 T_L ≈ T_H。"""
+    n = len(rows)
+    for i, row in enumerate(rows):
+        left, right = row["threshold_L"], row["threshold_H"]
+        if i == n - 1:
+            if abs(left - right) > THRESHOLD_EQ_ATOL:
+                return False
+        elif not left < right:
+            return False
+    return True
+
+
+def compute_cascade_far_frr(
+    detectors: list[DetectorProfile], rows: list[dict]
+) -> tuple[float, float]:
+    """用差式 cascade 公式，依落地門檻重算系統 FAR / FRR。
+
+    FAR = Σ_s FAR_s(T_L) · Π_{j<s} [FAR_j(T_H) − FAR_j(T_L)]
+    FRR = Σ_s FRR_s(T_H) · Π_{j<s} [FRR_j(T_L) − FRR_j(T_H)]
+    最後一關 T_L == T_H 時續傳機率為 0，每個輸入都會得到最終決策。
+    """
+    total_far = 0.0
+    total_frr = 0.0
+    far_reach = 1.0
+    frr_reach = 1.0
+    for profile, row in zip(detectors, rows):
+        far_L = profile.far_at(row["threshold_L"])
+        far_H = profile.far_at(row["threshold_H"])
+        frr_L = profile.frr_at(row["threshold_L"])
+        frr_H = profile.frr_at(row["threshold_H"])
+        total_far += far_L * far_reach
+        total_frr += frr_H * frr_reach
+        far_reach *= max(far_H - far_L, 0.0)
+        frr_reach *= max(frr_L - frr_H, 0.0)
+    return float(total_far), float(total_frr)
 
 
 def select_best_ordering(
@@ -544,19 +629,19 @@ def select_best_ordering(
          排列能贏過它。若不設 min_stages，選擇邏輯會永遠只選單一偵測器，
          違背 Defense-in-Depth（多層防禦、避免單點被針對性繞過）的設計初衷。
       1) 排列各偵測器 Tb 加總 <= latency_budget_ms
-      2) 用 solve_gp_thresholds 求解，求解失敗（或 total_far 隱含不可行）者剔除
-      3) total_frr <= beta 者才保留
-      4) 依總延遲由小到大排序，總延遲打平則取 total_frr 較小者
-      5) 還需通過「反查回實際門檻後 threshold_L < threshold_H」的健全性檢查，
-         沒通過的候選視為不可行，往下一個候選找
+      2) 用 solve_gp_thresholds 求解，求解失敗（最後一關單門檻 + RB<=1 下
+         可能對過嚴的 alpha 直接不可行）者剔除
+      3) 反查門檻成功，且前 N-1 關 T_L < T_H、最後一關 T_L ≈ T_H
+      4) 用差式 cascade 重算後的系統 FAR <= alpha、FRR <= beta
+      5) 依總延遲由小到大排序，總延遲打平則取（重算後）total_frr 較小者
 
-    完全沒有可行排列時回傳 None，並印出診斷訊息說明是哪個篩選步驟刷掉了全部候選
-    （min_stages 太高、latency 太緊、還是 alpha/beta 太嚴）。
+    完全沒有可行排列時回傳 None，並印出診斷訊息說明是哪個篩選步驟刷掉了全部候選。
     """
     n_total = len(orderings)
     n_min_stages_ok = 0
     n_latency_ok = 0
     n_gp_ok = 0
+    n_reverse_ok = 0
     n_beta_ok = 0
 
     candidates: list[tuple[tuple[str, ...], dict, float]] = []
@@ -576,38 +661,49 @@ def select_best_ordering(
             continue
         n_gp_ok += 1
 
-        if result["total_frr"] > beta:
+        rows = _reverse_map_thresholds(ordering, detectors, result)
+        if rows is None or not _thresholds_valid(rows):
+            continue
+        n_reverse_ok += 1
+
+        emp_far, emp_frr = compute_cascade_far_frr(detectors, rows)
+        if emp_far > alpha or emp_frr > beta:
             continue
         n_beta_ok += 1
 
+        result = {
+            **result,
+            "total_far": emp_far,
+            "total_frr": emp_frr,
+            "stage_rows": rows,
+        }
         candidates.append((ordering, result, total_latency))
 
     candidates.sort(key=lambda c: (c[2], c[1]["total_frr"]))
-
-    for ordering, result, total_latency in candidates:
-        detectors = [profiles_by_name[name] for name in ordering]
-        rows = _reverse_map_thresholds(ordering, detectors, result)
-        if all(r["threshold_L"] < r["threshold_H"] for r in rows):
-            return ordering, result, total_latency
+    if candidates:
+        return candidates[0]
 
     if n_min_stages_ok == 0:
         reason = f"min_stages={min_stages} 超過可用偵測器數量，沒有任何排列符合最少階段數要求。"
     elif n_latency_ok == 0:
         reason = "建議放寬 latency_budget_ms（目前太緊，所有排列的 Tb 總和都超過預算）。"
-    elif n_beta_ok == 0:
-        reason = "建議放寬 alpha/beta（目前太嚴格，GP 求不到滿足 alpha 的解，或 total_frr 超過 beta）。"
-    else:
+    elif n_gp_ok == 0:
         reason = (
-            "GP 解出的門檻在反查時不滿足 threshold_L < threshold_H，"
-            "可能是 conb 估計過於寬鬆或 far/frr 曲線品質不佳，建議檢查該排列偵測器的原始資料。"
+            "GP 求不到滿足 alpha 的解（最後一關單門檻且 RB<=1 之後，"
+            "若偵測器 conb 大於 alpha 會直接不可行）。不要先放寬 alpha，下一步應檢查 combine/conb。"
         )
+    elif n_reverse_ok == 0:
+        reason = "GP 有解，但反查時目標 FAR 超出曲線範圍，或門檻順序不合法。"
+    else:
+        reason = "落地門檻用差式 cascade 重算後，系統 FAR 超過 alpha 或 FRR 超過 beta。"
 
     print(
         f"[警告] 找不到可行排列：共 {n_total} 種排列，"
         f"{n_min_stages_ok} 種滿足 min_stages={min_stages}，"
         f"{n_latency_ok} 種通過 latency_budget_ms={latency_budget_ms} 篩選，"
         f"{n_gp_ok} 種 GP 求解成功且滿足 alpha={alpha}，"
-        f"{n_beta_ok} 種同時滿足 total_frr <= beta={beta}。\n  -> {reason}"
+        f"{n_reverse_ok} 種反查出門檻，"
+        f"{n_beta_ok} 種同時滿足重算後 FAR<=alpha、FRR<=beta={beta}。\n  -> {reason}"
     )
     return None
 
@@ -630,15 +726,17 @@ def dump_all_orderings(
 
     注意：這裡的 alpha 仍然是 GP 模型公式18 的硬約束（系統總 FAR 上限），
     不會被跳過；被跳過的只有 select_best_ordering() 那層「挑最佳 + beta +
-    latency_budget_ms」的外部篩選。若同一個排列的某階段反查出
-    threshold_L >= threshold_H，仍然照樣輸出，但會標記 valid_thresholds=False，
-    方便你判斷該排列的 conb 估計是否過於寬鬆。
+    latency_budget_ms」的外部篩選。反查失敗或最後一關不是單門檻時，
+    仍會輸出該排列（門檻為空），並標記 valid_thresholds=False。
+    CSV 的 system_total_far/frr 在反查成功時為差式 cascade 重算值；
+    gp_total_far/frr 為 GP 代數值，方便對照。
     """
     detector_names = list(profiles_by_name.keys())
     orderings = enumerate_orderings(detector_names)
 
     rows = []
     n_failed = 0
+    n_reverse_failed = 0
     for ordering in orderings:
         detectors = [profiles_by_name[name] for name in ordering]
         total_latency = sum(d.Tb for d in detectors)
@@ -649,7 +747,22 @@ def dump_all_orderings(
 
         stage_rows = _reverse_map_thresholds(ordering, detectors, result)
         stage_order_str = ",".join(ordering)
-        valid_thresholds = all(r["threshold_L"] < r["threshold_H"] for r in stage_rows)
+        valid_thresholds = stage_rows is not None and _thresholds_valid(stage_rows)
+        if not valid_thresholds:
+            n_reverse_failed += 1
+            emp_far = emp_frr = float("nan")
+            stage_rows = stage_rows or [
+                {
+                    "stage": i + 1,
+                    "detector_name": name,
+                    "threshold_L": float("nan"),
+                    "threshold_H": float("nan"),
+                    "expected_latency_ms": detectors[i].Tb,
+                }
+                for i, name in enumerate(ordering)
+            ]
+        else:
+            emp_far, emp_frr = compute_cascade_far_frr(detectors, stage_rows)
 
         for r in stage_rows:
             rows.append(
@@ -663,15 +776,18 @@ def dump_all_orderings(
                     "threshold_H": r["threshold_H"],
                     "expected_latency_ms": r["expected_latency_ms"],
                     "total_latency_ms": total_latency,
-                    "system_total_far": result["total_far"],
-                    "system_total_frr": result["total_frr"],
+                    "system_total_far": emp_far,
+                    "system_total_frr": emp_frr,
+                    "gp_total_far": result["gp_total_far"],
+                    "gp_total_frr": result["gp_total_frr"],
                     "valid_thresholds": valid_thresholds,
                 }
             )
 
     print(
         f"[全排列表] alpha={alpha}：{len(orderings)} 種排列中，"
-        f"{len(orderings) - n_failed} 種 GP 求解成功、{n_failed} 種求解失敗（不可行）。"
+        f"{len(orderings) - n_failed} 種 GP 求解成功、{n_failed} 種求解失敗（不可行），"
+        f"{n_reverse_failed} 種反查失敗或最後一關不是單門檻。"
     )
     return pd.DataFrame(rows)
 
@@ -702,13 +818,13 @@ def build_lookup_table(
         if picked is None:
             continue
         ordering, result, total_latency = picked
-        detectors = [profiles_by_name[name] for name in ordering]
-        stage_rows = _reverse_map_thresholds(ordering, detectors, result)
+        stage_rows = result["stage_rows"]
         stage_order_str = ",".join(ordering)
 
         print(
             f"[{level_name}] 選中排列={stage_order_str} "
             f"total_far={result['total_far']:.6f} total_frr={result['total_frr']:.6f} "
+            f"(GP far={result['gp_total_far']:.6f} frr={result['gp_total_frr']:.6f}) "
             f"total_latency={total_latency:.1f}ms"
         )
 
