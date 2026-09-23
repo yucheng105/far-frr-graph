@@ -17,7 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_DIR = (
     PROJECT_ROOT / "exhaustive-search" / "threshold-sweep" / "results" / "1000"
 )
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "far-frr-relation" / "results" / "1000"
+DEFAULT_OUTPUT_DIR = (
+    PROJECT_ROOT / "far-frr-relation" / "results" / "equations" / "1000"
+)
 PARAMETER_FIELDS = [
     "Source",
     "Relation",
