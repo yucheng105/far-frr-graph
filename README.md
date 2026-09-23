@@ -59,3 +59,13 @@
 
 # EER 點
 [results/min_eer_entries](results/min_eer_entries.csv)
+
+
+# Exhaustive Search for Accuracy-Oriented and Latency-Oriented Selection
+| 分類 | 選取標準 |
+| :--- | :--- |
+| **Accuracy-Oriented** | FAR Limit 之下，FRR 最低的 Permutation 與其 Threshold 組合 |
+| **Latency-Oriented** | FAR Limit 之下，推論時間最短的 Permutation 與其 Threshold 組合 |
+
+## 流程
+![Flow](./img/FAR-FRR_tradeoff.drawio.png)
