@@ -7,7 +7,8 @@ security_level 印出摘要（選中的排列、系統總FAR、系統總FRR、�
 
 同時檢查兩項格式健全性：
   - 同一個 security_level 底下的 stage 應從 1 開始連續遞增
-  - 每一列 threshold_L < threshold_H 皆須成立
+  - 前 N-1 關 threshold_L < threshold_H；最後一關 threshold_L ≈ threshold_H
+    （最後一關必須是單一門檻，做出最終決策）
 
 === 資料洩漏提醒 ===
 本腳本只檢查 lookup table 內部的一致性，並不能取代在獨立、與校準資料
@@ -25,7 +26,12 @@ import pandas as pd
 def validate_lookup_table(csv_path: Path) -> bool:
     """驗證 lookup table 格式並印出每個安全等級的摘要。回傳是否全數通過檢查。"""
     df = pd.read_csv(csv_path)
+    if df.empty:
+        print("[FAIL] lookup table 是空的，沒有任何安全等級找到可行排列。")
+        return False
+
     all_ok = True
+    eq_atol = 1e-6
 
     for level, group in df.groupby("security_level", sort=False):
         group = group.sort_values("stage")
@@ -53,10 +59,22 @@ def validate_lookup_table(csv_path: Path) -> bool:
             print(f"  [FAIL] stage 應從 1 連續遞增，實際為 {actual_stages}")
             level_ok = False
 
-        bad_rows = group[group["threshold_L"] >= group["threshold_H"]]
-        if not bad_rows.empty:
-            print(f"  [FAIL] 有 {len(bad_rows)} 列 threshold_L >= threshold_H")
-            level_ok = False
+        last_stage = int(group["stage"].max())
+        for _, row in group.iterrows():
+            left, right = float(row["threshold_L"]), float(row["threshold_H"])
+            if int(row["stage"]) == last_stage:
+                if abs(left - right) > eq_atol:
+                    print(
+                        f"  [FAIL] 最後一關必須是單一門檻（T_L ≈ T_H），"
+                        f"實際 T_L={left}, T_H={right}"
+                    )
+                    level_ok = False
+            elif not left < right:
+                print(
+                    f"  [FAIL] 第 {int(row['stage'])} 關應滿足 T_L < T_H，"
+                    f"實際 T_L={left}, T_H={right}"
+                )
+                level_ok = False
 
         print("  [OK]" if level_ok else "  [FAIL]")
         all_ok = all_ok and level_ok
