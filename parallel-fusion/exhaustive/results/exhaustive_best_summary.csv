@@ -1,0 +1,4 @@
+dataset,step,interval_count,grid_value_count,alpha_combination_count,evaluated_combination_count,best_tie_count,alpha_xception,alpha_ucf,alpha_sbi,beta,false_accepts,false_rejections,n_real,n_fake,far,frr,far_plus_frr
+Celeb-DF-v2,0.05,20,21,231,4851,1,0.05,0.4,0.55,0.5,29,69,178,340,0.16292134831460675,0.20294117647058824,0.36586252478519499
+DFDC,0.05,20,21,231,4851,1,0.05,0.3,0.65,0.3,538,872,2315,2389,0.23239740820734342,0.36500627877773129,0.59740368698507473
+FaceForensics++,0.05,20,21,231,4851,2,0.5,0.5,0,0.75,2,22,140,560,0.014285714285714285,0.039285714285714285,0.053571428571428568
