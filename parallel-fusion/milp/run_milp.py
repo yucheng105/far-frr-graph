@@ -7,10 +7,17 @@ import argparse
 import csv
 from pathlib import Path
 
-from milp_solver import FusionResult, FusionSample, read_fusion_csv, solve_parallel_fusion
+from milp_solver import (
+    FusionResult,
+    FusionSample,
+    build_fusion_seed,
+    read_fusion_csv,
+    solve_parallel_fusion,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PARALLEL_FUSION_DIR = SCRIPT_DIR.parent
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "milp-results"
 
 DATASET_FILES = {
@@ -34,8 +41,12 @@ SUMMARY_COLUMNS = [
     "n_fake",
     "optimal",
     "solver_status",
+    "best_bound",
     "mip_gap",
-    "mip_node_count",
+    "node_count",
+    "termination_reason",
+    "solution_source",
+    "grid_start_objective",
     "solver_message",
 ]
 
@@ -66,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=SCRIPT_DIR,
+        default=PARALLEL_FUSION_DIR,
         help="Directory containing *_fusion.csv files.",
     )
     parser.add_argument(
@@ -94,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional relative MIP gap in [0, 1].",
     )
     parser.add_argument(
+        "--grid-start",
+        type=Path,
+        default=None,
+        help=(
+            "Optional exhaustive_best_summary.csv used as a validated incumbent "
+            "objective cutoff."
+        ),
+    )
+    parser.add_argument(
         "--solver-log",
         action="store_true",
         help="Show the HiGHS solver log.",
@@ -117,6 +137,32 @@ def error_type(label: int, prediction: int) -> str:
     if label == 1 and prediction == 0:
         return "false_reject"
     return "correct"
+
+
+def read_grid_start(path: Path) -> dict[str, dict[str, str]]:
+    required = {
+        "dataset",
+        "alpha_xception",
+        "alpha_ucf",
+        "alpha_sbi",
+        "beta",
+    }
+    if not path.is_file():
+        raise FileNotFoundError(f"Grid-start CSV not found: {path}")
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing columns: {sorted(missing)}")
+        rows: dict[str, dict[str, str]] = {}
+        for row_number, row in enumerate(reader, start=2):
+            dataset = row["dataset"].strip()
+            if not dataset:
+                raise ValueError(f"{path}: row {row_number} has a blank dataset")
+            if dataset in rows:
+                raise ValueError(f"{path}: duplicate dataset {dataset!r}")
+            rows[dataset] = row
+    return rows
 
 
 def prediction_rows(
@@ -161,8 +207,18 @@ def summary_row(result: FusionResult) -> dict[str, object]:
         "n_fake": result.n_fake,
         "optimal": result.optimal,
         "solver_status": result.solver_status,
+        "best_bound": (
+            "" if result.best_bound is None else format(result.best_bound, ".17g")
+        ),
         "mip_gap": "" if result.mip_gap is None else format(result.mip_gap, ".17g"),
-        "mip_node_count": "" if result.mip_node_count is None else result.mip_node_count,
+        "node_count": "" if result.mip_node_count is None else result.mip_node_count,
+        "termination_reason": result.termination_reason,
+        "solution_source": result.solution_source,
+        "grid_start_objective": (
+            ""
+            if result.grid_start_objective is None
+            else format(result.grid_start_objective, ".17g")
+        ),
         "solver_message": result.solver_message,
     }
 
@@ -179,8 +235,23 @@ def print_result(result: FusionResult) -> None:
     print(f"  FRR:      {result.frr:.10f} ({result.false_rejections}/{result.n_fake})")
     print(f"  Objective:{result.objective:.10f}")
     print(f"  Optimal:  {result.optimal}")
-    if result.mip_gap is not None:
-        print(f"  MIP gap:  {result.mip_gap:.6%}")
+    print("Optimizer")
+    print(
+        "  Best bound: "
+        + ("N/A" if result.best_bound is None else f"{result.best_bound:.10f}")
+    )
+    print(
+        "  MIP gap: "
+        + ("N/A" if result.mip_gap is None else f"{result.mip_gap:.6%}")
+    )
+    print(
+        "  Node count: "
+        + ("N/A" if result.mip_node_count is None else str(result.mip_node_count))
+    )
+    print(f"  Termination reason: {result.termination_reason}")
+    print(f"  Source:   {result.solution_source}")
+    if result.grid_start_objective is not None:
+        print(f"  Grid incumbent: {result.grid_start_objective:.10f}")
     print()
 
 
@@ -189,6 +260,7 @@ def main() -> None:
     selected_datasets = (
         list(DATASET_FILES) if args.dataset == "all" else [args.dataset]
     )
+    grid_rows = None if args.grid_start is None else read_grid_start(args.grid_start)
 
     summary_rows: list[dict[str, object]] = []
     for dataset in selected_datasets:
@@ -199,12 +271,38 @@ def main() -> None:
                 f"{input_path} contains dataset {samples[0].dataset!r}, expected {dataset!r}"
             )
 
+        grid_seed = None
+        if grid_rows is not None:
+            if dataset not in grid_rows:
+                raise ValueError(
+                    f"{args.grid_start} does not contain dataset {dataset!r}"
+                )
+            grid_row = grid_rows[dataset]
+            try:
+                grid_seed = build_fusion_seed(
+                    samples,
+                    alpha_xception=float(grid_row["alpha_xception"]),
+                    alpha_ucf=float(grid_row["alpha_ucf"]),
+                    alpha_sbi=float(grid_row["alpha_sbi"]),
+                    beta=float(grid_row["beta"]),
+                    epsilon=args.epsilon,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid grid-start row for {dataset}: {error}"
+                ) from error
+            print(
+                f"Grid incumbent for {dataset}: "
+                f"FAR+FRR={grid_seed.objective:.10f}"
+            )
+
         result = solve_parallel_fusion(
             samples,
             epsilon=args.epsilon,
             time_limit=args.time_limit,
             mip_rel_gap=args.mip_rel_gap,
             display_solver_log=args.solver_log,
+            grid_seed=grid_seed,
         )
         prediction_path = args.output_dir / f"{dataset}_milp_predictions.csv"
         atomic_write_csv(
