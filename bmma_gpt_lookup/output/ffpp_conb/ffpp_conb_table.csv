@@ -1,0 +1,4 @@
+detector,conb,eer,eer_squared,eer_threshold,max_product,max_product_threshold,max_product_far,max_product_frr,bound_source
+UCF,0.003214,0.053061,0.002815,0.7893,0.003214,0.60,0.025000,0.128571,max(FAR*FRR)
+Xception,0.004082,0.062406,0.003895,0.7105,0.004082,0.70,0.057143,0.071429,max(FAR*FRR)
+SBI,0.040319,0.200621,0.040249,0.2076,0.040319,0.20,0.194643,0.207143,max(FAR*FRR)

@@ -1,0 +1,10 @@
+dataset,detector,source_file,eer,eer_threshold,eer_squared,max_product,max_product_threshold,max_product_far,max_product_frr,C,C_source,figure
+FaceForensics++,UCF,exhaustive-search\threshold-sweep\results\20\ucf\threshold_sweep_ucf_faceforensics.csv,0.053061,0.7893,0.002815,0.003214,0.60,0.025000,0.128571,0.003214,最大乘積,bmma_gpt_lookup\output\conb_all\faceforensics_ucf.png
+FaceForensics++,Xception,exhaustive-search\threshold-sweep\results\20\xception\threshold_sweep_xception_faceforensics.csv,0.062406,0.7105,0.003895,0.004082,0.70,0.057143,0.071429,0.004082,最大乘積,bmma_gpt_lookup\output\conb_all\faceforensics_xception.png
+FaceForensics++,SBI,bmma_gpt_lookup\threshold_sweep_sbi_faceforensics_v1.csv,0.200621,0.2076,0.040249,0.040319,0.20,0.194643,0.207143,0.040319,最大乘積,bmma_gpt_lookup\output\conb_all\faceforensics_sbi.png
+Celeb-DF-v2,UCF,exhaustive-search\threshold-sweep\results\20\ucf\threshold_sweep_ucf_celebdf.csv,0.289172,0.4626,0.083620,0.087326,0.55,0.444118,0.196629,0.087326,最大乘積,bmma_gpt_lookup\output\conb_all\celebdf_ucf.png
+Celeb-DF-v2,Xception,exhaustive-search\threshold-sweep\results\20\xception\threshold_sweep_xception_celebdf.csv,0.279569,0.5379,0.078159,0.078255,0.50,0.188235,0.415730,0.078255,最大乘積,bmma_gpt_lookup\output\conb_all\celebdf_xception.png
+Celeb-DF-v2,SBI,exhaustive-search\threshold-sweep\results\20\sbi\threshold_sweep_sbi_celebdf.csv,0.258687,0.5748,0.066919,0.070935,0.55,0.238235,0.297753,0.070935,最大乘積,bmma_gpt_lookup\output\conb_all\celebdf_sbi.png
+DFDC,UCF,exhaustive-search\threshold-sweep\results\20\ucf\threshold_sweep_ucf_dfdc.csv,0.329885,0.5105,0.108824,0.109325,0.55,0.366262,0.298488,0.109325,最大乘積,bmma_gpt_lookup\output\conb_all\dfdc_ucf.png
+DFDC,Xception,exhaustive-search\threshold-sweep\results\20\xception\threshold_sweep_xception_dfdc.csv,0.354014,0.4794,0.125326,0.124315,0.50,0.412306,0.301512,0.125326,EER²,bmma_gpt_lookup\output\conb_all\dfdc_xception.png
+DFDC,SBI,exhaustive-search\threshold-sweep\results\20\sbi\threshold_sweep_sbi_dfdc.csv,0.336679,0.1375,0.113352,0.112414,0.10,0.266639,0.421598,0.113352,EER²,bmma_gpt_lookup\output\conb_all\dfdc_sbi.png
